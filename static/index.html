@@ -3,31 +3,301 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>大型场馆人群安全与现场指挥</title>
+  <title>区域疏导单 · 大型场馆现场指挥</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 860px; margin: auto; }
-    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-    button { padding: .5rem .8rem; cursor: pointer; }
+    :root { --line:#e5e7eb; --bg:#f9fafb; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; color: #1f2937; background: var(--bg); }
+    main { max-width: 1080px; margin: auto; padding: 1.5rem; }
+    h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.05rem; margin: 1.5rem 0 .75rem; }
+    .sub { color: #6b7280; font-size: .9rem; margin-bottom: 1rem; }
+    .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: .75rem 1rem; }
+    select, input { padding: .45rem .6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .9rem; }
+    button { padding: .45rem .85rem; border: 1px solid #2563eb; background: #2563eb; color: #fff; border-radius: 6px; cursor: pointer; font-size: .88rem; }
+    button.ghost { background: #fff; color: #2563eb; }
+    button.danger { background: #dc2626; border-color: #dc2626; }
+    button.subtle { background: #fff; color: #374151; border-color: #d1d5db; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .75rem; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: .85rem 1rem; }
+    .card h3 { margin: 0 0 .5rem; font-size: .95rem; display: flex; justify-content: space-between; }
+    .kv { display: flex; justify-content: space-between; font-size: .85rem; color: #4b5563; padding: .12rem 0; }
+    .kv b { color: #111827; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    th, td { text-align: left; padding: .55rem .7rem; font-size: .84rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { background: #f3f4f6; font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    .tag { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: .76rem; }
+    .tag.reserved, .tag.active { background: #dbeafe; color: #1d4ed8; }
+    .tag.completed { background: #d1fae5; color: var(--ok); }
+    .tag.cancelled { background: #f3f4f6; color: #6b7280; }
+    .tag.expired { background: #fef3c7; color: var(--warn); }
+    .rowform { display: flex; gap: .35rem; align-items: center; }
+    .rowform input { width: 5.5rem; }
+    #flash { position: fixed; right: 1rem; top: 1rem; max-width: 360px; }
+    .flash { padding: .6rem .9rem; border-radius: 8px; font-size: .85rem; margin-bottom: .5rem; color: #fff; }
+    .flash.err { background: var(--bad); }
+    .flash.ok { background: var(--ok); }
+    .muted { color: #9ca3af; font-size: .8rem; }
   </style>
 </head>
 <body>
 <main>
-  <h1>大型场馆人群安全与现场指挥</h1>
-  <p>区域容量、入口通道、事件、现场任务和人员到位通过JSON接口管理。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
-  <pre id="result">等待操作</pre>
-  <pre>GET  /health
-GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
-POST /api/entities/&lt;id&gt;/actions
-GET  /api/audit</pre>
+  <h1>区域疏导单</h1>
+  <div class="sub">指挥员在同一场馆选择原区域与接收区域，提交转入人数时即时占住接收区域余量；入口登记实际人数后计入在场人数并释放占用，超过预占将被拒绝；单子取消或过期后占用归还，原区域人数不变。</div>
+
+  <div class="bar">
+    <label>身份
+      <select id="role">
+        <option value="coordinator">指挥员 coordinator</option>
+        <option value="supervisor">安保主管 supervisor</option>
+        <option value="operator">入口操作员 operator</option>
+        <option value="viewer">观察员 viewer</option>
+      </select>
+    </label>
+    <input id="userId" value="commander-1" size="14">
+    <button class="ghost" onclick="seedDemo()">生成演示场馆</button>
+    <button class="subtle" onclick="sweepExpire()">扫描到期单</button>
+    <button class="subtle" onclick="loadAll()">刷新</button>
+    <span class="muted" id="clock"></span>
+  </div>
+
+  <h2>区域余量</h2>
+  <div class="grid" id="zones"></div>
+
+  <h2>创建疏导单</h2>
+  <div class="bar">
+    <label>场馆 <select id="fVenue"></select></label>
+    <label>原区域（不改人数）<select id="fSource"></select></label>
+    <label>接收区域 <select id="fTarget"></select></label>
+    <label>转入人数 <input id="fCount" type="number" min="1" value="30" style="width:6rem"></label>
+    <label>过期时间（可选，分钟） <input id="fExpire" type="number" min="1" placeholder="如 10" style="width:7rem"></label>
+    <button onclick="createOrder()">创建并占额</button>
+  </div>
+
+  <h2>疏导单列表</h2>
+  <table>
+    <thead><tr>
+      <th>单号</th><th>原区域</th><th>接收区域</th><th>预占/已放/剩余</th><th>状态</th><th>过期时间</th><th>入口放行</th><th>操作</th>
+    </tr></thead>
+    <tbody id="orders"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+  </table>
+
+  <h2>操作审计</h2>
+  <pre id="audit" class="card" style="white-space:pre-wrap;max-height:240px;overflow:auto;font-size:.78rem"></pre>
 </main>
+<div id="flash"></div>
+
 <script>
-async function checkHealth() {
-  const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+let venues = [], zones = [], gates = [], orders = [];
+
+function headers() {
+  return {
+    'Content-Type': 'application/json',
+    'X-User-Id': document.getElementById('userId').value || 'anonymous',
+    'X-Role': document.getElementById('role').value,
+  };
 }
+
+function flash(text, ok) {
+  const box = document.getElementById('flash');
+  const el = document.createElement('div');
+  el.className = 'flash ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: headers(),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload.error || (res.status + ' 错误'));
+  }
+  return payload;
+}
+
+function zname(id) {
+  const z = zones.find(x => x.id === id);
+  return z ? z.data.name : id.slice(0, 8);
+}
+
+async function loadAll() {
+  [venues, zones, gates, orders] = await Promise.all([
+    api('GET', '/api/venues'),
+    api('GET', '/api/zones'),
+    api('GET', '/api/gates'),
+    api('GET', '/api/diversions'),
+  ]).then(rs => rs.map(r => r.items));
+  renderZones();
+  renderForms();
+  renderOrders();
+  const audit = await api('GET', '/api/audit');
+  document.getElementById('audit').textContent =
+    audit.items.slice(-12).reverse()
+      .map(a => `${a.created_at}  ${a.actor_role}/${a.actor_id}  ${a.action}  ${a.entity_id.slice(0,8)}  ${a.from_status||''}→${a.to_status}  ${JSON.stringify(a.detail)}`)
+      .join('\n');
+}
+
+function renderZones() {
+  const box = document.getElementById('zones');
+  if (!zones.length) {
+    box.innerHTML = '<div class="card muted">暂无区域，请先生成演示场馆。</div>';
+    return;
+  }
+  box.innerHTML = zones.map(z => {
+    const d = z.data;
+    const cap = d.capacity, occ = d.current_occupancy || 0;
+    const held = d.held_count || 0, avail = d.available_count ?? (cap - occ);
+    return `<div class="card">
+      <h3><span>${d.name}</span><span class="tag ${z.status}">${z.status}</span></h3>
+      <div class="kv"><span>容量</span><b>${cap}</b></div>
+      <div class="kv"><span>在场人数</span><b>${occ}</b></div>
+      <div class="kv"><span>疏导单预占</span><b style="color:#1d4ed8">${held}</b></div>
+      <div class="kv"><span>剩余名额</span><b style="color:${avail===0?'#b91c1c':'#047857'}">${avail}</b></div>
+    </div>`;
+  }).join('');
+}
+
+function zoneOptions(selected) {
+  return zones.map(z => `<option value="${z.id}" ${z.id===selected?'selected':''}>${z.data.name}（剩 ${z.data.available_count ?? ''}）</option>`).join('');
+}
+
+function renderForms() {
+  const vSel = document.getElementById('fVenue');
+  vSel.innerHTML = venues.map(v => `<option value="${v.id}">${v.data.name}</option>`).join('');
+  const refresh = () => {
+    const vid = vSel.value;
+    const mine = zones.filter(z => z.data.venue_id === vid);
+    document.getElementById('fSource').innerHTML = zoneOptions(mine[0] && mine[0].id);
+    document.getElementById('fTarget').innerHTML = zoneOptions(mine[1] && mine[1].id);
+  };
+  vSel.onchange = refresh;
+  refresh();
+}
+
+function renderOrders() {
+  const body = document.getElementById('orders');
+  if (!orders.length) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">还没有疏导单。</td></tr>';
+    return;
+  }
+  body.innerHTML = orders.map(o => {
+    const d = o.data;
+    const live = ['reserved', 'active'].includes(o.status);
+    const gateOptions = gates
+      .filter(g => (g.data.zone_ids || []).includes(d.target_zone_id))
+      .map(g => `<option value="${g.id}">${g.data.name}（${g.status}）</option>`).join('');
+    return `<tr>
+      <td>${o.id.slice(0,8)}<br><span class="muted">v${o.version}</span></td>
+      <td>${zname(d.source_zone_id)}</td>
+      <td>${zname(d.target_zone_id)}</td>
+      <td>${d.requested_count} / ${d.admitted_count || 0} / <b style="color:#1d4ed8">${d.remaining_count ?? ''}</b></td>
+      <td><span class="tag ${o.status}">${o.status}${d.is_expired && live ? '·已到期' : ''}</span></td>
+      <td>${d.expires_at ? d.expires_at.replace('T',' ').slice(0,16) : '—'}</td>
+      <td>
+        <div class="rowform">
+          <select id="g-${o.id}">${gateOptions || '<option value="">无可用入口</option>'}</select>
+          <input id="n-${o.id}" type="number" min="1" value="${d.remaining_count ?? 0}" ${live?'':'disabled'}>
+          <button ${live?'':'disabled'} onclick="admit('${o.id}')">放行</button>
+        </div>
+      </td>
+      <td><button class="danger" ${live?'':'disabled'} onclick="cancelOrder('${o.id}')">取消</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function createOrder() {
+  const minutes = document.getElementById('fExpire').value;
+  const body = {
+    venue_id: document.getElementById('fVenue').value,
+    source_zone_id: document.getElementById('fSource').value,
+    target_zone_id: document.getElementById('fTarget').value,
+    requested_count: Number(document.getElementById('fCount').value),
+  };
+  if (body.source_zone_id === body.target_zone_id) {
+    flash('原区域和接收区域必须不同', false);
+    return;
+  }
+  if (minutes) {
+    body.expires_at = new Date(Date.now() + Number(minutes) * 60000).toISOString();
+  }
+  try {
+    await api('POST', '/api/diversions', body);
+    flash('疏导单已创建，接收区域余量已占住', true);
+  } catch (e) { flash('创建失败：' + e.message, false); }
+  loadAll();
+}
+
+async function admit(id) {
+  const gate_id = document.getElementById('g-' + id).value;
+  const count = Number(document.getElementById('n-' + id).value);
+  if (!gate_id) { flash('该接收区域没有可选入口', false); return; }
+  try {
+    await api('POST', `/api/entities/${id}/actions`, {
+      action: 'admit',
+      data: { gate_id, count, admitted_at: new Date().toISOString() },
+    });
+    flash(`已登记放行 ${count} 人`, true);
+  } catch (e) { flash('放行失败：' + e.message, false); }
+  loadAll();
+}
+
+async function cancelOrder(id) {
+  const reason = prompt('取消原因（占用将归还给接收区域）：', '人流恢复');
+  if (!reason) return;
+  try {
+    await api('POST', `/api/entities/${id}/actions`, { action: 'cancel', data: { reason } });
+    flash('疏导单已取消，占用已归还', true);
+  } catch (e) { flash('取消失败：' + e.message, false); }
+  loadAll();
+}
+
+async function sweepExpire() {
+  try {
+    const res = await api('POST', '/api/diversions/expire-due', {});
+    flash(`扫描完成，${res.items.length} 张单子过期归还`, true);
+  } catch (e) { flash('扫描失败：' + e.message, false); }
+  loadAll();
+}
+
+async function seedDemo() {
+  try {
+    const existing = await api('GET', '/api/venues');
+    if (existing.items.length) { flash('已有场馆数据，直接展示', true); loadAll(); return; }
+    const venue = await api('POST', '/api/venues', { name: '中心体育场', address: '奥体路 1 号' });
+    const za = await api('POST', '/api/zones', { venue_id: venue.id, name: '北区（快满）', capacity: 100 });
+    const zb = await api('POST', '/api/zones', { venue_id: venue.id, name: '南区', capacity: 100 });
+    const zc = await api('POST', '/api/zones', { venue_id: venue.id, name: '东区', capacity: 60 });
+    const ga = await api('POST', '/api/gates', { venue_id: venue.id, name: '北入口', zone_ids: [za.id] });
+    const gb = await api('POST', '/api/gates', { venue_id: venue.id, name: '南入口', zone_ids: [zb.id] });
+    const gc = await api('POST', '/api/gates', { venue_id: venue.id, name: '东入口', zone_ids: [zc.id] });
+    for (const id of [za.id, zb.id, zc.id]) {
+      await api('POST', `/api/entities/${id}/actions`, { action: 'open', data: { checklist: 'clear' } });
+    }
+    for (const id of [ga.id, gb.id, gc.id]) {
+      await api('POST', `/api/entities/${id}/actions`, { action: 'open', data: { operator_id: 'op-1' } });
+    }
+    // North zone is nearly full (90/100).
+    await api('POST', `/api/entities/${za.id}/actions`, {
+      action: 'admit',
+      data: { gate_id: ga.id, count: 90, admitted_at: new Date().toISOString() },
+    });
+    flash('演示场馆已生成：北区 90/100 快满，南区、东区可接收，南入口与东入口已开放', true);
+  } catch (e) { flash('生成失败：' + e.message, false); }
+  loadAll();
+}
+
+document.getElementById('role').addEventListener('change', loadAll);
+loadAll();
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}, 1000);
 </script>
 </body>
 </html>

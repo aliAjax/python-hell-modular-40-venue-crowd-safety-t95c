@@ -1,4 +1,52 @@
+from datetime import datetime, timezone
+
 from .domain import ConflictError, InvalidTransition, PermissionDenied, ValidationError
+
+DIVERSION_KIND = "diversion"
+DIVERSION_ACTIVE_STATUSES = ("reserved", "active")
+DIVERSION_CREATE_ROLES = ("supervisor", "coordinator", "admin")
+DIVERSION_ADMIT_ROLES = ("operator", "supervisor", "admin")
+DIVERSION_CANCEL_ROLES = ("supervisor", "coordinator", "admin")
+
+
+def parse_timestamp(value, field="timestamp"):
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise ValidationError("%s must be an ISO-8601 timestamp" % field)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def diversion_remaining(entity):
+    data = entity["data"]
+    remaining = int(data.get("requested_count", 0)) - int(data.get("admitted_count", 0))
+    return max(remaining, 0)
+
+
+def diversion_is_expired(entity, now):
+    raw = entity["data"].get("expires_at")
+    if not raw:
+        return False
+    return parse_timestamp(raw, "expires_at") <= now
+
+
+def active_diversion_hold(lookup, zone_id, now):
+    """Sum headcount still held by active diversion orders targeting a zone."""
+    total = 0
+    for diversion in lookup(DIVERSION_KIND, "target_zone_id", zone_id) or []:
+        if diversion["status"] not in DIVERSION_ACTIVE_STATUSES:
+            continue
+        if diversion_is_expired(diversion, now):
+            continue
+        total += diversion_remaining(diversion)
+    return total
 
 
 def _find_one(lookup, kind, field, value):
@@ -109,11 +157,12 @@ def _validate_zone_admit(actor, entity, data, lookup):
         raise ValidationError("gate does not serve this zone")
     occupancy = int(entity["data"].get("current_occupancy", 0))
     capacity = int(entity["data"].get("capacity", 0))
-    if not capacity_available(capacity, occupancy, count):
+    held = active_diversion_hold(lookup, entity["id"], datetime.now(timezone.utc))
+    if not capacity_available(capacity, occupancy + held, count):
         raise ConflictError("zone capacity would be exceeded")
     if entity["status"] == "limited":
         limit = int(entity["data"].get("admit_limit", capacity))
-        if occupancy + count > limit:
+        if occupancy + held + count > limit:
             raise ConflictError("zone admission limit would be exceeded")
     return {
         "current_occupancy": occupancy + count,
@@ -155,6 +204,7 @@ class RuleEngine:
         "medical_points": "medical_point",
         "incidents": "incident",
         "tasks": "task",
+        "diversions": DIVERSION_KIND,
     }
     INITIAL_STATUS = {
         "venue": "ready",
