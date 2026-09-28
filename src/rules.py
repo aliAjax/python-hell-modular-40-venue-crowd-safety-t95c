@@ -1,4 +1,41 @@
+from datetime import datetime
+
 from .domain import ConflictError, InvalidTransition, PermissionDenied, ValidationError
+
+
+DIVERSION_ACTIVE_STATUSES = ("reserved", "partially_released")
+DIVERSION_DONE_STATUSES = ("released", "cancelled", "expired")
+
+
+def parse_timestamp(value):
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise ValidationError("invalid timestamp: " + str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
+
+def diversion_zone_quota(zone, active_orders):
+    """Remaining sellable quota: capacity minus occupants minus live holds."""
+    capacity = int(zone["data"].get("capacity", 0))
+    occupancy = int(zone["data"].get("current_occupancy", 0))
+    reserved = 0
+    for order in active_orders:
+        held = int(order["data"].get("reserve_count", 0)) - int(
+            order["data"].get("admitted_count", 0)
+        )
+        reserved += max(0, held)
+    return {
+        "capacity": capacity,
+        "current_occupancy": occupancy,
+        "reserved": reserved,
+        "remaining": capacity - occupancy - reserved,
+    }
 
 
 def _find_one(lookup, kind, field, value):
@@ -95,6 +132,30 @@ def _validate_task(actor, data, lookup):
     return {}
 
 
+def _validate_diversion(actor, data, lookup):
+    venue = _find_one(lookup, "venue", "id", data.get("venue_id"))
+    if not venue:
+        raise ValidationError("venue does not exist")
+    source = _find_one(lookup, "zone", "id", data.get("source_zone_id"))
+    destination = _find_one(lookup, "zone", "id", data.get("destination_zone_id"))
+    if not source or source["data"].get("venue_id") != venue["id"]:
+        raise ValidationError("source zone must belong to the venue")
+    if not destination or destination["data"].get("venue_id") != venue["id"]:
+        raise ValidationError("destination zone must belong to the venue")
+    if source["id"] == destination["id"]:
+        raise ValidationError("source and destination zones must differ")
+    try:
+        reserve_count = int(data.get("reserve_count"))
+    except (TypeError, ValueError):
+        raise ValidationError("reserve_count must be an integer")
+    if reserve_count <= 0:
+        raise ValidationError("reserve_count must be positive")
+    parse_timestamp(data.get("expires_at"))
+    if not str(data.get("reason", "")).strip():
+        raise ValidationError("diversion reason is required")
+    return {"reserve_count": reserve_count, "admitted_count": 0}
+
+
 def _validate_zone_admit(actor, entity, data, lookup):
     try:
         count = int(data.get("count"))
@@ -155,6 +216,7 @@ class RuleEngine:
         "medical_points": "medical_point",
         "incidents": "incident",
         "tasks": "task",
+        "diversions": "diversion",
     }
     INITIAL_STATUS = {
         "venue": "ready",
@@ -164,6 +226,7 @@ class RuleEngine:
         "medical_point": "standby",
         "incident": "reported",
         "task": "draft",
+        "diversion": "reserved",
     }
     TRANSITIONS = {
         "venue": {
@@ -218,6 +281,7 @@ class RuleEngine:
         "medical_point": ("venue_id", "zone_id", "capacity", "equipment_level"),
         "incident": ("venue_id", "zone_id", "source_ref", "incident_type", "severity", "reported_at"),
         "task": ("incident_id", "venue_id", "zone_id", "team_id", "task_type"),
+        "diversion": ("venue_id", "source_zone_id", "destination_zone_id", "reserve_count", "expires_at", "reason"),
     }
     ACTION_REQUIRED = {
         ("venue", "limit"): ("reason", "capacity_limit"),
@@ -253,6 +317,7 @@ class RuleEngine:
         "medical_point": ("supervisor", "coordinator", "admin"),
         "incident": ("operator", "supervisor", "coordinator", "admin"),
         "task": ("supervisor", "coordinator", "admin"),
+        "diversion": ("coordinator", "supervisor", "admin"),
     }
     ROLE_ACTIONS = {
         "limit": ("coordinator", "supervisor", "admin"),
@@ -276,6 +341,8 @@ class RuleEngine:
         "arrive": ("operator", "supervisor", "admin"),
         "complete": ("operator", "supervisor", "admin"),
         "cancel": ("supervisor", "coordinator", "admin"),
+        "release": ("operator", "supervisor", "coordinator", "admin"),
+        "expire": ("supervisor", "coordinator", "admin"),
     }
     CUSTOM_CREATE = {
         "venue": _validate_venue,
@@ -285,6 +352,7 @@ class RuleEngine:
         "medical_point": _validate_medical_point,
         "incident": _validate_incident,
         "task": _validate_task,
+        "diversion": _validate_diversion,
     }
     CUSTOM_TRANSITIONS = {
         ("zone", "admit"): _validate_zone_admit,

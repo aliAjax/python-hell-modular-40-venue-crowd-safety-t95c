@@ -3,31 +3,291 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>大型场馆人群安全与现场指挥</title>
+  <title>区域疏导单 · 大型场馆人群安全与现场指挥</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 860px; margin: auto; }
-    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-    button { padding: .5rem .8rem; cursor: pointer; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 1.5rem; color: #1f2937; background: #f9fafb; }
+    main { max-width: 1080px; margin: auto; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.05rem; margin-top: 1.6rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem 1.25rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+    th { color: #6b7280; font-weight: 600; }
+    label { display: block; font-size: .82rem; color: #374151; margin: .45rem 0 .15rem; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: .4rem .5rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .9rem; }
+    button { padding: .42rem .8rem; cursor: pointer; border-radius: 6px; border: 1px solid #2563eb; background: #2563eb; color: #fff; font-size: .85rem; }
+    button.secondary { background: #fff; color: #2563eb; }
+    button.danger { border-color: #dc2626; background: #dc2626; }
+    button.ghost { border-color: #9ca3af; background: #fff; color: #374151; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+    .tag { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; }
+    .tag.reserved { background: #fef3c7; color: #92400e; }
+    .tag.partially_released { background: #dbeafe; color: #1e40af; }
+    .tag.released { background: #d1fae5; color: #065f46; }
+    .tag.cancelled, .tag.expired { background: #f3f4f6; color: #6b7280; }
+    #flash { margin: .8rem 0; padding: .6rem .8rem; border-radius: 6px; font-size: .88rem; display: none; white-space: pre-wrap; }
+    #flash.ok { display: block; background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+    #flash.err { display: block; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    .muted { color: #6b7280; font-size: .8rem; }
+    .num { font-variant-numeric: tabular-nums; }
+    code { background: #f3f4f6; padding: 0 .25rem; border-radius: 4px; }
   </style>
 </head>
 <body>
 <main>
-  <h1>大型场馆人群安全与现场指挥</h1>
-  <p>区域容量、入口通道、事件、现场任务和人员到位通过JSON接口管理。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
-  <pre id="result">等待操作</pre>
-  <pre>GET  /health
-GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
-POST /api/entities/&lt;id&gt;/actions
-GET  /api/audit</pre>
+  <h1>区域疏导单</h1>
+  <p class="muted">指挥员创建疏导单时预占接收区域余量；入口按实际人数放行，计入在场人数并释放占用，超过预占拒绝；取消或过期后占用归还，原区域人数不变。</p>
+
+  <div class="card">
+    <div class="row">
+      <label style="margin:0">身份
+        <select id="role" style="width:auto">
+          <option value="coordinator">指挥员 coordinator</option>
+          <option value="operator">入口操作员 operator</option>
+          <option value="supervisor">安全主管 supervisor</option>
+          <option value="viewer">观察者 viewer</option>
+        </select>
+      </label>
+      <input id="userId" value="commander-1" style="width:auto;flex:0 1 180px" placeholder="X-User-Id">
+      <button class="secondary" onclick="refreshAll()">刷新</button>
+      <button class="ghost" onclick="seedDemo()">初始化演示数据</button>
+    </div>
+  </div>
+
+  <div id="flash"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>区域名额</h2>
+      <table>
+        <thead><tr><th>区域</th><th>容量</th><th>在场</th><th>预占</th><th>剩余</th></tr></thead>
+        <tbody id="zones"><tr><td colspan="5" class="muted">点击“刷新”或“初始化演示数据”</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>创建疏导单（占接收区域余量）</h2>
+      <label>场馆</label><select id="venueSel"></select>
+      <label>原区域（人数不变）</label><select id="sourceSel"></select>
+      <label>接收区域</label><select id="destSel"></select>
+      <div class="row">
+        <div style="flex:1"><label>转入人数</label><input id="reserveCount" type="number" min="1" value="30"></div>
+        <div style="flex:1"><label>有效时长（分钟）</label><input id="ttl" type="number" min="1" value="10"></div>
+      </div>
+      <label>原因</label><input id="reason" value="原区域接近满载，入口改道">
+      <p><button onclick="createDiversion()">创建并占用名额</button></p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1rem">
+    <h2>疏导单列表</h2>
+    <table>
+      <thead><tr>
+        <th>状态</th><th>原区域 → 接收区域</th><th>预占/已放行</th><th>仍占用</th><th>过期时间</th><th>操作</th>
+      </tr></thead>
+      <tbody id="orders"><tr><td colspan="6" class="muted">暂无数据</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:1rem">
+    <h2>接口</h2>
+    <p class="muted" style="line-height:1.7">
+      <code>POST /api/diversions</code> 创建并预占 ·
+      <code>POST /api/entities/&lt;id&gt;/actions {action:"release", gate_id, actual_count, admitted_at}</code> 放行 ·
+      <code>… {action:"cancel", reason}</code> 取消 ·
+      <code>GET /api/entities/&lt;zoneId&gt;/quota</code> 剩余名额（容量/在场/预占/剩余）
+    </p>
+  </div>
 </main>
+
 <script>
-async function checkHealth() {
-  const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+let zones = [], gates = [], venues = [], orders = [];
+
+function headers() {
+  return {
+    "Content-Type": "application/json",
+    "X-User-Id": document.getElementById("userId").value || "anonymous",
+    "X-Role": document.getElementById("role").value,
+  };
 }
+
+function flash(message, ok) {
+  const el = document.getElementById("flash");
+  el.textContent = message;
+  el.className = ok ? "ok" : "err";
+}
+
+function api(path, options) {
+  return fetch(path, options).then(async (res) => {
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body.type || "Error") + ": " + (body.error || res.status));
+    return body;
+  });
+}
+
+const STATUS_LABEL = {
+  reserved: "已占用",
+  partially_released: "部分放行",
+  released: "已放行完",
+  cancelled: "已取消",
+  expired: "已过期",
+};
+
+function zoneName(id) {
+  const zone = zones.find((z) => z.id === id);
+  return zone ? zone.data.name : id;
+}
+
+function renderZones() {
+  const body = document.getElementById("zones");
+  if (!zones.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">暂无区域</td></tr>';
+    return;
+  }
+  Promise.all(zones.map((z) => api("/api/entities/" + z.id + "/quota"))).then((quotas) => {
+    body.innerHTML = quotas.map((q) => `<tr>
+      <td>${zoneName(q.zone_id)}<div class="muted">${q.zone_id.slice(0,8)}</div></td>
+      <td class="num">${q.capacity}</td>
+      <td class="num">${q.current_occupancy}</td>
+      <td class="num">${q.reserved}</td>
+      <td class="num"><strong>${q.remaining}</strong></td>
+    </tr>`).join("");
+  });
+}
+
+function renderSelects() {
+  const v = document.getElementById("venueSel");
+  v.innerHTML = venues.map((x) => `<option value="${x.id}">${x.data.name}</option>`).join("");
+  const opts = zones.map((z) => `<option value="${z.id}">${z.data.name}（容量 ${z.data.capacity}）</option>`).join("");
+  document.getElementById("sourceSel").innerHTML = opts;
+  document.getElementById("destSel").innerHTML = opts;
+  if (zones.length > 1) document.getElementById("destSel").selectedIndex = 1;
+}
+
+function gateOptions() {
+  return gates.map((g) => `<option value="${g.id}">${g.data.name}（${g.status}）</option>`).join("");
+}
+
+function renderOrders() {
+  const body = document.getElementById("orders");
+  if (!orders.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">暂无疏导单</td></tr>';
+    return;
+  }
+  body.innerHTML = orders.map((o) => {
+    const d = o.data;
+    const held = d.reserve_count - (d.admitted_count || 0);
+    const active = ["reserved", "partially_released"].includes(o.status);
+    const actions = active ? `
+      <div class="row">
+        <select id="gate-${o.id}" style="width:auto">${gateOptions()}</select>
+        <input id="count-${o.id}" type="number" min="1" max="${held}" value="${held}" style="width:85px" title="实际放行人数">
+        <button onclick="releaseOrder('${o.id}')">放行</button>
+        <button class="danger" onclick="cancelOrder('${o.id}')">取消</button>
+      </div>` : '<span class="muted">—</span>';
+    return `<tr>
+      <td><span class="tag ${o.status}">${STATUS_LABEL[o.status] || o.status}</span></td>
+      <td>${zoneName(d.source_zone_id)} → <strong>${zoneName(d.destination_zone_id)}</strong>
+        <div class="muted">${d.reason || ""}</div></td>
+      <td class="num">${d.reserve_count} / ${d.admitted_count || 0}</td>
+      <td class="num">${active ? held : 0}</td>
+      <td class="num muted">${(d.expires_at || "").replace("T", " ").replace("+00:00", "Z")}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
+}
+
+function refreshAll() {
+  return Promise.all([
+    api("/api/venues"),
+    api("/api/zones"),
+    api("/api/gates"),
+    api("/api/diversions"),
+  ]).then(([vs, zs, gs, os]) => {
+    venues = vs.items || [];
+    zones = zs.items || [];
+    gates = gs.items || [];
+    orders = os.items || [];
+    renderSelects();
+    renderZones();
+    renderOrders();
+  }).catch((err) => flash(err.message, false));
+}
+
+function seedDemo() {
+  const coordinator = { "Content-Type": "application/json", "X-User-Id": "commander-1", "X-Role": "coordinator" };
+  const operator = { "Content-Type": "application/json", "X-User-Id": "gate-01", "X-Role": "operator" };
+  api("/api/venues", { method: "POST", headers: coordinator, body: JSON.stringify({ name: "中央体育馆", address: "体育路 1 号" }) })
+    .then((venue) => Promise.all([
+      api("/api/zones", { method: "POST", headers: coordinator, body: JSON.stringify({ venue_id: venue.id, name: "北区（快满）", capacity: 100 }) }),
+      api("/api/zones", { method: "POST", headers: coordinator, body: JSON.stringify({ venue_id: venue.id, name: "南区（接收）", capacity: 100 }) }),
+    ]).then(([north, south]) =>
+      api("/api/gates", { method: "POST", headers: coordinator, body: JSON.stringify({ venue_id: venue.id, name: "南门 S1", zone_ids: [south.id] }) })
+        .then((gate) => ({ north, south, gate }))
+    )
+    .then(({ north, south, gate }) =>
+      api("/api/entities/" + gate.id + "/actions", { method: "POST", headers: operator, body: JSON.stringify({ action: "open", data: { operator_id: "gate-01" } }) })
+        .then(() => Promise.all([
+          api("/api/entities/" + north.id + "/actions", { method: "POST", headers: operator, body: JSON.stringify({ action: "open", data: { checklist: "clear" } }) }),
+          api("/api/entities/" + south.id + "/actions", { method: "POST", headers: operator, body: JSON.stringify({ action: "open", data: { checklist: "clear" } }) }),
+        ]))
+    ))
+    .then(() => refreshAll())
+    .then(() => flash("演示数据已就绪：两个区域（容量各 100）+ 开放中的南门 S1", true))
+    .catch((err) => flash(err.message, false));
+}
+
+function createDiversion() {
+  const payload = {
+    venue_id: document.getElementById("venueSel").value,
+    source_zone_id: document.getElementById("sourceSel").value,
+    destination_zone_id: document.getElementById("destSel").value,
+    reserve_count: parseInt(document.getElementById("reserveCount").value, 10),
+    expires_at: new Date(Date.now() + parseInt(document.getElementById("ttl").value, 10) * 60000).toISOString(),
+    reason: document.getElementById("reason").value,
+  };
+  api("/api/diversions", { method: "POST", headers: headers(), body: JSON.stringify(payload) })
+    .then(() => refreshAll())
+    .then(() => flash("疏导单已创建，接收区域余量已占用 " + payload.reserve_count + " 人", true))
+    .catch((err) => flash(err.message, false));
+}
+
+function releaseOrder(id) {
+  const gateId = document.getElementById("gate-" + id).value;
+  const actual = parseInt(document.getElementById("count-" + id).value, 10);
+  api("/api/entities/" + id + "/actions", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ action: "release", data: { gate_id: gateId, actual_count: actual, admitted_at: new Date().toISOString() } }),
+  })
+    .then(() => refreshAll())
+    .then(() => flash("已登记放行 " + actual + " 人，计入接收区域在场人数并释放对应占用", true))
+    .catch((err) => flash(err.message, false));
+}
+
+function cancelOrder(id) {
+  api("/api/entities/" + id + "/actions", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ action: "cancel", data: { reason: "指挥员取消改道" } }),
+  })
+    .then(() => refreshAll())
+    .then(() => flash("疏导单已取消，占用名额已归还，原区域人数不变", true))
+    .catch((err) => flash(err.message, false));
+}
+
+document.getElementById("role").addEventListener("change", () => {
+  document.getElementById("userId").value = {
+    coordinator: "commander-1",
+    operator: "gate-01",
+    supervisor: "safety-1",
+    viewer: "lookout",
+  }[document.getElementById("role").value] || "anonymous";
+});
+
+refreshAll();
 </script>
 </body>
 </html>
